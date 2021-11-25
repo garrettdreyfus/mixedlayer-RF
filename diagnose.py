@@ -16,38 +16,25 @@ from sklearn.neural_network import MLPRegressor
 matplotlib.use('pdf')
 
 
-data = []
-names = {}
+def extract_identifications(fname,exlcude):
+    list_of_names = {}
+    names = {}
+    with open(fname) as f:
+        for line in f:
+            o= json.loads(line)
+            if o["profileName"] not in names and int(o["depth"])>0:
+                names[o["profileName"]] = {}
+                names[o["profileName"]]["depths"]=[]
+                names[o["profileName"]]["identifierNames"]=[]
+            if int(o["depth"])>0 and o["identifierName"] not in exclude:
+                names[o["profileName"]]["depths"].append(o["depth"])
+                names[o["profileName"]]["identifierNames"].append(o["identifierName"])
+                list_of_names.setdefault(o["identifierName"],0)
+                list_of_names[o["identifierName"]] = list_of_names[o["identifierName"]] +1
+        return names
 
 exclude = ["gdf", "professor dr teacher", "gdoggerino", "Garrett!", "fullrun", "Garrett Finucane", "garrett", "garrett finucane","Gdf","g doggerino", "mike", "Michael"]
-list_of_names = {}
-count = 0
-with open('output.json') as f:
-    for line in f:
-        o= json.loads(line)
-        if o["profileName"] not in names and int(o["depth"])>0:
-            names[o["profileName"]] = {}
-            names[o["profileName"]]["depths"]=[]
-            names[o["profileName"]]["identifierNames"]=[]
-        if int(o["depth"])>0 and o["identifierName"] not in exclude:
-            count+=1
-            names[o["profileName"]]["depths"].append(o["depth"])
-            names[o["profileName"]]["identifierNames"].append(o["identifierName"])
-            list_of_names.setdefault(o["identifierName"],0)
-            list_of_names[o["identifierName"]] = list_of_names[o["identifierName"]] +1
-print(list_of_names)
-number=[]
-stdevs=[]
-mean = []
-for l in names.keys():
-    d  = np.asarray(names[l]["depths"])
-    if len(d)>=2:
-        number.append(len(d))
-        mean.append(np.mean(d))
-        stdevs.append(np.std(d))
-plt.hist(number)
-plt.savefig("data dist.png")
-plt.close()
+names = extract_identifications("output.json",exclude)
 
 def vals_and_grad(profile,names):
     plt.plot(profile["densities"],profile["pressures"])
@@ -113,9 +100,7 @@ def thresholds(profile,name):
     return [lon,lat,doy] + features
 
 
-def ht_features(profile,names):
-    plt.plot(profile["densities"],profile["pressures"])
-    depths = names[profile["name"]]["depths"]
+def ht_features(profile):
     if len(depths)>0:
         #depths = list([int(np.nanmean(depths))])
 
@@ -133,24 +118,20 @@ def ht_features(profile,names):
         tempfactors =[ h.temp.TMaxPressure, h.temp.MLTFITPressure, h.temp.TTMLDPressure, h.temp.DTMPressure, h.temp.TDTMPressure]
         return [lon,lat,doy] + tempfactors + densfactors + salfactors 
 
-def ht_features_reduced(profile,names):
+def ht_features_reduced(profile):
     plt.plot(profile["densities"],profile["pressures"])
-    depths = names[profile["name"]]["depths"]
-    if len(depths)>0:
-        #depths = list([int(np.nanmean(depths))])
+    d = interpolate.interp1d(profile["pressures"],profile["densities"])
+    xnew = np.arange(20, 150, 1)
+    densnew = d(xnew)
 
-        d = interpolate.interp1d(profile["pressures"],profile["densities"])
-        xnew = np.arange(20, 150, 1)
-        densnew = d(xnew)
-
-        date = profile["date"]
-        lon = profile["lon"]
-        lat = profile["lat"]
-        doy = int(date[5:7])*30 + int(date[8:10])
-        h = HolteAndTalley(profile["pressures"],profile["temperatures"],profile["salinities"],profile["densities"])
-        densfactors = [ h.density.MLTFITDensityPressure, h.density.DThresholdPressure] 
-        tempfactors =[h.temp.TTMLDPressure]
-        return tempfactors + densfactors
+    date = profile["date"]
+    lon = profile["lon"]
+    lat = profile["lat"]
+    doy = int(date[5:7])*30 + int(date[8:10])
+    h = HolteAndTalley(profile["pressures"],profile["temperatures"],profile["salinities"],profile["densities"])
+    densfactors = [ h.density.MLTFITDensityPressure, h.density.DThresholdPressure] 
+    tempfactors =[h.temp.TTMLDPressure]
+    return tempfactors + densfactors
 
 def findOutliers(names):
     for p in names.values():
@@ -158,37 +139,41 @@ def findOutliers(names):
         divergent = np.asarray(p["identifierNames"])[np.abs(depths-np.mean(depths))>50]
         print(divergent)
 
-with open('../MLDIdentifierTool/json_generator/profiles.json') as f:
-    profiles = json.load(f)
-    print(findOutliers(names))
-    doy = []
-    lat = []
-    lon = []
-    densities = [] 
-    y = [ ]
-    training_size = 0.5
-    chosenprofiles = np.random.choice(len(profiles), size=int(len(profiles)*training_size), replace=False)
-    mask = np.zeros_like(profiles,bool)
-    mask[chosenprofiles] = True
-    lats = []
-    for profile in range(len(np.asarray(profiles))):
-        if np.abs(profiles[profile]["lat"])>60:
-            lats.append(profile)
-            mask[profile]=False
-    highlat = np.random.choice(len(lats), size=int(len(lats)*training_size), replace=False)
-    mask[highlat]=True
-    chosenprofiles = mask
+def extract_argo_and_split(fname,training_size):
+    with open(fname) as f:
+        profiles = json.load(f)
+        print(findOutliers(names))
+        training_size = 0.5
+        lowlatprofiles = []
+        highlatprofiles = []
+        for p in profiles:
+            if np.abs(p["lat"])>60:
+                highlatprofiles.append(p)
+            else:
+                lowlatprofiles.append(p)
+        chosenlow = np.random.choice(len(lowlatprofiles), size=int(len(lowlatprofiles)*training_size), replace=False)
+        chosenhigh = np.random.choice(len(highlatprofiles), size=int(len(highlatprofiles)*training_size), replace=False)
+        lowmask = np.zeros_like(lowlatprofiles,bool)
+        lowmask[chosenlow] = True
+        highmask = np.zeros_like(highlatprofiles,bool)
+        highmask[chosenhigh] = True
+    return lowlatprofiles+highlatprofiles,np.concatenate((lowmask,highmask))
 
+def create_training_data(profiles,chosenprofiles,names,feature_function=ht_features_reduced):
     X = []
+    y = []
     for profile in np.asarray(profiles)[chosenprofiles]:
         if profile["name"] in names.keys():
-            htp = np.asarray(ht_features_reduced(profile,names))
-            #for l in names[profile["name"]]["depths"]:
-                #X.append(htp)
-                #y.append(l)
+            htp = np.asarray(feature_function(profile))
             if len(names[profile["name"]]["depths"]) >0:
                 X.append(np.asarray(htp))
                 y.append(np.nanmean(names[profile["name"]]["depths"]))
+    return X,y
+
+
+
+profiles,chosenprofiles = extract_argo_and_split('../MLDIdentifierTool/json_generator/profiles.json',0.5)
+X,y = create_training_data(profiles,chosenprofiles,names)
 
 print(len(y),len(X))
 y = np.asarray(y)
@@ -247,12 +232,11 @@ with open('../MLDIdentifierTool/json_generator/profiles.json') as f:
         profile["temperatures"] = np.asarray(orig_temperatures) + np.random.uniform(-0.002,0.002,size=len(orig_temperatures))
         profile["salinities"] = np.asarray(orig_salinities) + np.random.uniform(-0.01,0.01,size=len(orig_salinities))
         h = HolteAndTalley(profile["pressures"],profile["temperatures"],profile["salinities"],profile["densities"])
-        X = np.asarray([ht_features_reduced(profile,names)])
+        X = np.asarray([ht_features_reduced(profile)])
         regr_out = np.round(regr.predict(X)[0])
         ht_error.append(h.densityMLD)
         thresh_error.append( h.density.DThresholdPressure)
         regr_error.append(regr_out)
-        print(h.density.debug)
     plt.close()
     plt.hist(np.asarray(ht_error)-np.mean(ht_error),color="blue",alpha=0.5)
     plt.hist(np.asarray(regr_error)-np.mean(regr_error),color="red",alpha=0.5)
@@ -284,7 +268,7 @@ if True:
                 depths=np.asarray(depths)
                 if len(depths)>0:
                     h = HolteAndTalley(profile["pressures"],profile["temperatures"],profile["salinities"],profile["densities"])
-                    X = np.asarray([ht_features_reduced(profile,names)])
+                    X = np.asarray([ht_features_reduced(profile)])
                     dec_out = dec_tree.predict(X)[0]
                     regr_out = np.round(regr.predict(X)[0])
                     mask = np.asarray(profile["pressures"])<200
