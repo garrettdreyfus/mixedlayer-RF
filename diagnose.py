@@ -4,6 +4,7 @@ import random
 import matplotlib
 import numpy as np
 import pandas as pd
+import gsw
 from os.path import basename
 from scipy import interpolate
 from sklearn.model_selection import train_test_split
@@ -11,11 +12,9 @@ from sklearn.tree import DecisionTreeRegressor
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from holteandtalley import HolteAndTalley
 from sklearn.preprocessing import StandardScaler
-import seaborn as sns
 from sklearn.neural_network import MLPRegressor
-matplotlib.use('pdf')
 
-
+np.random.seed(2)
 def extract_identifications(fname,exlcude):
     list_of_names = {}
     names = {}
@@ -170,165 +169,174 @@ def create_training_data(profiles,chosenprofiles,names,feature_function=ht_featu
                 y.append(np.nanmean(names[profile["name"]]["depths"]))
     return X,y
 
+def quality_index(profile,mld_depth):
+    pres = np.asarray(profile["pressures"])
+    dens = np.asarray(profile["densities"])
+    uppervar = np.std(dens[pres<mld_depth])
+    lowervar = np.std(dens[pres<mld_depth*1.5])
+    return 1 - (uppervar/lowervar)
 
 
-profiles,chosenprofiles = extract_argo_and_split('../MLDIdentifierTool/json_generator/profiles.json',0.5)
+profiles,chosenprofiles = extract_argo_and_split('../MLDIdentifierTool/json_generator/profiles.json',0.25)
 X,y = create_training_data(profiles,chosenprofiles,names)
 
-print(len(y),len(X))
 y = np.asarray(y)
 X = np.asarray(X)
-## DECISION TREE
-dec_tree = DecisionTreeRegressor()
-dec_tree.fit(X,y)
 ## Random Forest
 ### REALLY GOOD FOR SOME REASON
-#regr = RandomForestRegressor(random_state=0, oob_score=True)
+regr = RandomForestRegressor(random_state=0, oob_score=True,n_jobs=5)
 #Next
-regr = RandomForestRegressor(n_jobs=5,max_depth=20)
-#regr = MLPRegressor(max_iter=100000,hidden_layer_sizes=(50,20,5))
-#regr = GradientBoostingRegressor()
+#regr = RandomForestRegressor(n_jobs=5,max_depth=20,random_state=0,n_estimators=1000)
 regr.fit(X,y)
 #feature_names = ["lon","lat","doy","tmax","mltfittemp","ttmld","dtm","tdtm","dmin","mltfitdens","dthreshold","dgradient","sgradmax","smltfit","intrusiondepth"]
 #feature_names = ["lon","lat","doy"]
-feature_names = []
+feature_names = ["DBM (Temperature)", "MLTFIT (Density)", "DBM (Density)"]
 #dens_names = list(np.arange(0.01,0.05,0.001))
 #temp_names = list(np.arange(0.01,0.3,0.01))
 #feature_names += dens_names + temp_names
-f_names = [f"feature {i}" for i in range(X.shape[1]-len(feature_names))]
-feature_names += f_names
 
-importances = dec_tree.feature_importances_
+importances = regr.feature_importances_
 print("most important feature:" , np.asarray(feature_names)[np.argmax(importances)])
 forest_importances = pd.Series(importances, index=feature_names)
 fig, ax = plt.subplots(figsize=(8, 6))
 forest_importances.plot.bar(ax=ax)
+ax.set_ylabel ("Normalized Feature Importance")
+plt.title("Relative Feature Importance")
 plt.savefig("feature_importance.png")
 plt.close()
 # A sensitive one gdfcdfs/jma/2902997/profiles/R2902997_034.nc
 # gdfcdfs/aoml/2903126/profiles/R2903126_176.nc
-
-with open('../MLDIdentifierTool/json_generator/profiles.json') as f:
-    profiles = json.load(f)
-    ht_error = []
-    regr_error = []
-    thresh_error = []
-    test_profiles = []
-    for profile in np.asarray(profiles)[~chosenprofiles]:
-        test_profiles.append(profile)
-    profile = random.choice(test_profiles)
-    plt.close()
-    plt.plot(profile["pressures"],profile["temperatures"])
-    plt.savefig("random_profile_choice.png")
-    plt.close()
-    n_iter = 100
-    orig_pressures = profile["pressures"]
-    orig_salinities = profile["salinities"]
-    orig_temperatures = profile["temperatures"]
-    print(profile["name"])
-    for l in range(n_iter):
-        print(l)
-        depths = names[profile["name"]]["depths"]
-        profile["temperatures"] = np.asarray(orig_temperatures) + np.random.uniform(-0.002,0.002,size=len(orig_temperatures))
-        profile["salinities"] = np.asarray(orig_salinities) + np.random.uniform(-0.01,0.01,size=len(orig_salinities))
-        h = HolteAndTalley(profile["pressures"],profile["temperatures"],profile["salinities"],profile["densities"])
-        X = np.asarray([ht_features_reduced(profile)])
-        regr_out = np.round(regr.predict(X)[0])
-        ht_error.append(h.densityMLD)
-        thresh_error.append( h.density.DThresholdPressure)
-        regr_error.append(regr_out)
-    plt.close()
-    plt.hist(np.asarray(ht_error)-np.mean(ht_error),color="blue",alpha=0.5)
-    plt.hist(np.asarray(regr_error)-np.mean(regr_error),color="red",alpha=0.5)
-    plt.hist(np.asarray(thresh_error)-np.mean(thresh_error),color="orange",alpha=0.5)
-    plt.savefig("sensitivity.png")
-    plt.close()
-#y_pred_random=regr.predict(X_test)
-#print("oob score", regr.oob_score_)
-#print("RMSE: ",np.sqrt(np.mean((y_test-y_pred_random)**2)))
-#print("stdev: ",np.std(np.abs((y_test-y_pred_random))))
-#plt.scatter(X_test[:,0],y_pred_random,label = "Random Forest")
-#plt.scatter(X_test[:,0],y_test,label="True")
-#plt.savefig("comparison.png")
-#plt.close()
 ##################
 ### Boyer Montegut
-if True:
-    dec_error= [[],[]]
-    ht_error = [[],[]]
-    crit_error = [[],[]]
-    obs_std = [[],[]]
-    print(len(np.asarray(profiles)[~chosenprofiles]))
-    with open('../MLDIdentifierTool/json_generator/profiles.json') as f:
-        profiles = json.load(f)
-        for profile in np.asarray(profiles)[~chosenprofiles]:
-            if profile["name"] in names.keys():
-                depths = names[profile["name"]]["depths"]
-                depths = names[profile["name"]]["depths"]
-                depths=np.asarray(depths)
-                if len(depths)>0:
-                    h = HolteAndTalley(profile["pressures"],profile["temperatures"],profile["salinities"],profile["densities"])
-                    X = np.asarray([ht_features_reduced(profile)])
-                    dec_out = dec_tree.predict(X)[0]
-                    regr_out = np.round(regr.predict(X)[0])
-                    mask = np.asarray(profile["pressures"])<200
-                    g = interpolate.interp1d(profile["pressures"],profile["densities"])
-                    denschoose = []
-                    maxpres = np.nanmax(list(depths) + [regr_out,h.densityMLD,h.density.DThresholdPressure,np.mean(depths)])
-                    for d in depths:
-                        denschoose.append(g(d))
-                    try:
-                        if np.sum(np.abs(depths-np.mean(depths))>50) > 1:
-                            plt.close()
-                            plt.plot(np.asarray(profile["densities"])[mask],np.asarray(profile["pressures"])[mask],color="black")
-                            plt.scatter(denschoose,depths,color="red",label="chosen",marker="+")
-                            plt.axhline(regr_out)
-                            plt.scatter(g(h.densityMLD),h.densityMLD,color="green", label="HT",marker="s")
-                            plt.scatter(g(h.density.DThresholdPressure),h.density.DThresholdPressure,color="orange",marker="_",label="Dthresh")
-                            plt.scatter(g(np.mean(depths)),np.mean(depths),color="black",marker="o",label="chosen mean")
-                            plt.gca().invert_yaxis()
-                            plt.ylim(0,maxpres+50)
-                            plt.legend()
-                            plt.title(profile["name"])
-                            plt.savefig('./pics/{}-{}.png'.format(basename(profile["name"]),abs(int(h.densityMLD-np.mean(depths)))))
-                            plt.close()
-                    except:
-                        print("zoped")
-
-                    dec_error[0].append(regr_out-np.mean(depths))
-                    dec_error[0][-1] = np.abs(dec_error[0][-1]/np.mean(depths))
-                    dec_error[1] += list(np.abs(regr_out-depths)/np.mean(depths))
-                    ht_error[0].append((h.densityMLD-np.mean(depths)))
-                    ht_error[0][-1] = np.abs(ht_error[0][-1]/np.mean(depths))
-                    ht_error[1] += list(np.abs(h.densityMLD-depths)/np.mean(depths))
-                    obs_std[0].append(np.std(depths)/np.mean(depths))
-                    obs_std[1]+= list(np.abs(np.mean(depths)-depths)/np.mean(depths))
-                    try:
-                        #plt.scatter(f(h.temp.TTMLD),h.temp.TTMLD,color="orange")
-                        crit_error[0].append((h.density.DThresholdPressure-np.mean(depths)))
-                        crit_error[0][-1] =np.abs(crit_error[0][-1]/np.mean(depths))
-                        crit_error[1] += list(np.abs(h.density.DThresholdPressure-depths)/np.mean(depths))
-                    except:
-                        crit_error.append(np.nan)
-                        print("out of range")
-
-    #dec_error[0] = np.sqrt(np.asarray(dec_error[0]))
-    #ht_error[0] = np.sqrt(np.asarray(ht_error[0]))
-    #crit_error[0] = np.sqrt(np.asarray(crit_error[0]))
-    hta = np.asarray(ht_error[0])
-    deca = np.asarray(dec_error[0])
-    crit = np.asarray(crit_error[0])
-    obs_std = np.asarray(obs_std[0])
-    obs_std[obs_std < 0.0001] = 0.0001
-    hta[hta<0.0001] = 0.0001
-    crit[crit<0.0001] = 0.0001
-    deca[deca<0.0001] = 0.0001
-    error = np.asarray([deca,hta,obs_std,crit])
+def error_dist_figure(profiles,chosenprofiles,mlmodel,feature_function):
+    ht_error = []
+    crit_error = []
+    regr_error = []
+    obs_std = []
+    for profile in np.asarray(profiles)[~chosenprofiles]:
+        if profile["name"] in names.keys():
+            depths=np.asarray(names[profile["name"]]["depths"])
+            if len(depths)>0:
+                h = HolteAndTalley(profile["pressures"],profile["temperatures"],profile["salinities"],profile["densities"])
+                X = np.asarray([feature_function(profile)])
+                regr_out = np.round(mlmodel.predict(X)[0])
+                regr_error.append((regr_out-np.mean(depths)))
+                regr_error[-1] = np.abs(regr_error[-1]/np.mean(depths))
+                g = interpolate.interp1d(profile["pressures"],profile["densities"])
+                ht_error.append((h.densityMLD-np.mean(depths)))
+                ht_error[-1] = np.abs(ht_error[-1]/np.mean(depths))
+                obs_std.append(np.std(depths)/np.mean(depths))
+                try:
+                    #plt.scatter(f(h.temp.TTMLD),h.temp.TTMLD,color="orange")
+                    crit_error.append((h.density.DThresholdPressure-np.mean(depths)))
+                    crit_error[-1] =np.abs(crit_error[-1]/np.mean(depths))
+                except:
+                    crit_error.append(np.nan)
+                    print("out of range")
+    error = np.asarray([regr_error,ht_error,crit_error,obs_std])*100
     plt.close()
-    plt.boxplot(error.T,labels=["RF","HT","Observed STDEV","Density Threshold"])
+    fig, ax = plt.subplots(figsize=(12,15))
+    ax.set_ylabel("Percent Of Mean Visually Identified Mixed Layer")
+    labels = ["RF Error","H&T (Density) Error","DBM (Density) Error","Obs. STDEV"]
+    ax.set_xticklabels(labels, rotation=45, ha='right')
+    ax.boxplot(error.T,labels=["RF Error","H&T (Density) Error","Density Thresh Error","Obs. STDEV"])
+    plt.title("Comparison of Random Forest Model and Existing Mixed Layer Depth Algorithms")
     plt.savefig('errordist.png')
     plt.close()
 
+def quality_index_figure(profiles,chosenprofiles,mlmodel,feature_function):
+    ht_error = []
+    crit_error = []
+    regr_error = []
+    obs_std = []
+    for profile in np.asarray(profiles)[~chosenprofiles]:
+        if profile["name"] in names.keys():
+            depths=np.asarray(names[profile["name"]]["depths"])
+            if len(depths)>0:
+                h = HolteAndTalley(profile["pressures"],profile["temperatures"],profile["salinities"],profile["densities"])
+                X = np.asarray([feature_function(profile)])
+                regr_out = np.round(mlmodel.predict(X)[0])
+                regr_error.append(quality_index(profile,regr_out))
+                ht_error.append(quality_index(profile,h.densityMLD))
+                try:
+                    #plt.scatter(f(h.temp.TTMLD),h.temp.TTMLD,color="orange")
+                    crit_error.append(quality_index(profile,h.density.DThresholdPressure))
+                except:
+                    crit_error.append(np.nan)
+                    print("out of range")
+    mask = np.logical_and(~np.isnan(crit_error),~np.isnan(ht_error))
+    regr_error = np.asarray(regr_error)[mask]
+    ht_error = np.asarray(ht_error)[mask]
+    crit_error = np.asarray(crit_error)[mask]
+    print(regr_error)
+    print(ht_error)
+    print(crit_error)
+    error = np.asarray([regr_error,ht_error,crit_error])
+    plt.close()
+    fig, ax = plt.subplots(figsize=(12,15))
+    ax.set_ylabel("")
+    labels = ["RF Error","H&T (Density) Error","DBM (Density) Error"]
+    ax.set_xticklabels(labels, rotation=45, ha='right')
+    ax.boxplot(error.T,labels=["RF Error","H&T (Density) Error","Density Thresh Error"])
+    plt.title("")
+    plt.savefig('qual_index.png')
+    plt.close()
+quality_index_figure(profiles,chosenprofiles,regr,ht_features_reduced)
+error_dist_figure(profiles,chosenprofiles,regr,ht_features_reduced)
+
+def obs_std_error(profiles):
+    with open('../MLDIdentifierTool/json_generator/profiles.json') as f:
+        profiles = json.load(f)
+        obs_std=[]
+        obs_std_norm=[]
+        lats = []
+        for profile in np.asarray(profiles)[~chosenprofiles]:
+            depths = names[profile["name"]]["depths"]
+            depths=np.asarray(depths)
+            if len(depths)>0:
+                obs_std.append(np.std(depths))
+                obs_std_norm.append((np.std(depths)/np.nanmean(depths))*100)
+                lats.append(profile["lat"])
+        obs_std = np.asarray(obs_std)
+        obs_std_norm = np.asarray(obs_std_norm)
+        lats = np.asarray(lats)
+        plt.close()
+        fig, ((ax1,ax2),(ax3,ax4),(ax5,ax6)) = plt.subplots(3,2,figsize=(14,8))
+        ax1.hist(obs_std,color="black")
+        ax1.axvline(x=np.nanmean(obs_std),color='red')
+        ax1.axvline(x=np.nanmedian(obs_std),color='blue')
+        print(np.median(obs_std))
+        ax3.hist(obs_std[np.abs(lats)>50],color="black")
+        ax3.axvline(x=np.nanmean(obs_std[np.abs(lats)>50]),color='red')
+        ax3.axvline(x=np.nanmedian(obs_std[np.abs(lats)>50]),color='blue')
+        ax5.hist(obs_std[np.abs(lats)<50],color="black")
+        ax5.axvline(x=np.nanmean(obs_std[np.abs(lats)<50]),color='red')
+        ax5.axvline(x=np.nanmedian(obs_std[np.abs(lats)<50]),color='blue')
+
+        ax2.hist(obs_std_norm,color="black")
+        ax2.axvline(x=np.nanmean(obs_std_norm),color='red')
+        ax2.axvline(x=np.nanmedian(obs_std_norm),color='blue')
+
+        ax4.hist(obs_std_norm[np.abs(lats)>50],color="black")
+        ax4.axvline(x=np.nanmean(obs_std_norm[np.abs(lats)>50]),color='red')
+        ax4.axvline(x=np.nanmedian(obs_std_norm[np.abs(lats)>50]),color='blue')
+
+        ax6.hist(obs_std_norm[np.abs(lats)<50],color="black")
+        ax6.axvline(x=np.nanmean(obs_std_norm[np.abs(lats)<50]),color='red')
+        ax6.axvline(x=np.nanmedian(obs_std_norm[np.abs(lats)<50]),color='blue')
+        ax6.set_xlabel("Standard Deviation As Perecentage of Mean")
+        ax5.set_xlabel("Standard Deviation in Dbar")
+        ax1.set_xlim(0,100)
+        ax3.set_xlim(0,100)
+        ax5.set_xlim(0,100)
+        ax2.set_xlim(0,200)
+        ax4.set_xlim(0,200)
+        ax6.set_xlim(0,200)
+        #ax2.hist(obs_std_norm[np.abs(lats)>50],color="blue")
+        #ax2.hist(obs_std_norm[np.abs(lats)<50],color="red")
+        plt.savefig('observational_error.png')
+        plt.close()
+obs_std_error(profiles)
 if False:
     with open('../MLDIdentifierTool/json_generator/profiles.json') as f:
         profiles = json.load(f)
@@ -409,3 +417,47 @@ if False:
         #for l in range(error.T.shape[0]):
             #print(names[l],int(np.nanmean(np.sqrt(error.T[l]**2))),int(np.std(np.sqrt(error.T[l]**2))))
         plt.savefig("ht_error.png")
+
+with open('../MLDIdentifierTool/json_generator/profiles.json') as f:
+    profiles = json.load(f)
+    ht_error = []
+    regr_error = []
+    thresh_error = []
+    test_profiles = []
+    for profile in np.asarray(profiles)[~chosenprofiles]:
+        test_profiles.append(profile)
+    plt.close()
+    n_iter = 25
+    for profile in test_profiles:
+        orig_pressures = profile["pressures"]
+        orig_salinities = profile["salinities"]
+        orig_temperatures = profile["temperatures"]
+        orig_densities = profile["densities"]
+        ht_results = []
+        thresh_results = []
+        regr_results = []
+        for l in range(n_iter):
+            depths = names[profile["name"]]["depths"]
+            profile["temperatures"] = np.asarray(orig_temperatures) + np.random.normal(0,0.002*0.5,size=len(orig_temperatures))
+            profile["salinities"] = np.asarray(orig_salinities) + np.random.normal(0,0.01*0.5,size=len(orig_salinities))
+            profile["densities"] = gsw.sigma0(profile["salinities"],profile["temperatures"])
+            h = HolteAndTalley(profile["pressures"],profile["temperatures"],profile["salinities"],profile["densities"])
+            X = np.asarray([ht_features_reduced(profile)])
+            regr_out = np.round(regr.predict(X)[0])
+            ht_results.append(h.densityMLD)
+            thresh_results.append(h.density.DThresholdPressure)
+            regr_results.append(regr_out)
+        ht_error.append(np.std(ht_results))
+        regr_error.append(np.std(regr_results))
+        thresh_error.append(np.std(thresh_results))
+    fig, (ax1,ax2,ax3) = plt.subplots(3,1,figsize=(10,10))
+    ax1.hist(ht_error,range=(0,50),bins=20,color="red",label="Holte and Talley",alpha=0.3)
+    ax1.set_ylim(0,60)
+    ax2.set_ylim(0,60)
+    ax3.set_ylim(0,60)
+    ax2.hist(regr_error,range=(0,50),bins=20,color="blue",label = "Random Forest Method",alpha=0.3)
+    ax3.hist(thresh_error,range=(0,50),bins=20,color="green", label = "Density Threshold Method",alpha=0.3)
+    ax.legend()
+    plt.savefig("sensitivity.png")
+    plt.close()
+
