@@ -5,6 +5,7 @@ import matplotlib
 import numpy as np
 import pandas as pd
 import gsw
+import pickle
 from os.path import basename
 from scipy import interpolate
 from sklearn.model_selection import train_test_split
@@ -18,9 +19,12 @@ np.random.seed(2)
 def extract_identifications(fname,exlcude):
     list_of_names = {}
     names = {}
+    unique_names = set()
     with open(fname) as f:
         for line in f:
             o= json.loads(line)
+            print(o)
+            unique_names.add(o["identifierName"])
             if o["profileName"] not in names and int(o["depth"])>0:
                 names[o["profileName"]] = {}
                 names[o["profileName"]]["depths"]=[]
@@ -30,10 +34,21 @@ def extract_identifications(fname,exlcude):
                 names[o["profileName"]]["identifierNames"].append(o["identifierName"])
                 list_of_names.setdefault(o["identifierName"],0)
                 list_of_names[o["identifierName"]] = list_of_names[o["identifierName"]] +1
+        print(unique_names)
+        for n in names.keys():
+            depths = np.asarray(names[n]["depths"])
+            m = np.nanmean(depths)
+            s = np.std(depths)
+            depths = depths[np.logical_and(depths>m-2*s,depths<m+2*s)]
+            names[n]["depths"] = depths
+
         return names
 
 exclude = ["gdf", "professor dr teacher", "gdoggerino", "Garrett!", "fullrun", "Garrett Finucane", "garrett", "garrett finucane","Gdf","g doggerino", "mike", "Michael"]
+
 names = extract_identifications("output.json",exclude)
+
+pickle.dump(names,open("identifications.pickle","wb"))
 
 def vals_and_grad(profile,names):
     plt.plot(profile["densities"],profile["pressures"])
@@ -53,21 +68,6 @@ def vals_and_grad(profile,names):
         doy = int(date[5:7])*30 + int(date[8:10])
         hydrodata = list(densnew)+list(np.diff(densnew)) + list(salnew)+list(np.diff(salnew))+list(tempnew)+list(np.diff(tempnew))
         return [lon,lat,doy] + hydrodata
-
-def density_diff(profile,names):
-    plt.plot(profile["densities"],profile["pressures"])
-    depths = names[profile["name"]]["depths"]
-    if len(depths)>0:
-        #depths = list([int(np.nanmean(depths))])
-        d = interpolate.interp1d(profile["pressures"],profile["densities"])
-        s = interpolate.interp1d(profile["pressures"],profile["salinities"])
-        t = interpolate.interp1d(profile["pressures"],profile["temperatures"])
-        xnew = np.arange(20, 150, 1)
-        densnew = d(xnew)
-        salnew = s(xnew)
-        tempnew = t(xnew)
-        hydrodata = list(densnew-densnew[0])
-        return hydrodata
 
 def find_threshold(quant,pressures,thresh):
     for index in range(0,len(pressures)):
@@ -122,7 +122,6 @@ def ht_features_reduced(profile):
     d = interpolate.interp1d(profile["pressures"],profile["densities"])
     xnew = np.arange(20, 150, 1)
     densnew = d(xnew)
-
     date = profile["date"]
     lon = profile["lon"]
     lat = profile["lat"]
@@ -141,7 +140,6 @@ def findOutliers(names):
 def extract_argo_and_split(fname,training_size):
     with open(fname) as f:
         profiles = json.load(f)
-        print(findOutliers(names))
         training_size = 0.5
         lowlatprofiles = []
         highlatprofiles = []
@@ -244,6 +242,19 @@ def error_dist_figure(profiles,chosenprofiles,mlmodel,feature_function):
     plt.savefig('errordist.png')
     plt.close()
 
+def example_figure(profiles,names,eyed,mlmodel,feature_function):
+    X = []
+    y = []
+    for profile in profiles:
+        if eyed in profile["name"]:
+            h = HolteAndTalley(profile["pressures"],profile["temperatures"],profile["salinities"],profile["densities"])
+            X = np.asarray([feature_function(profile)])
+            regr_out = np.round(mlmodel.predict(X)[0])
+            plt.plot(profile["densities"],profile["pressures"])
+            plt.invert_yaxis()
+
+#example_figure(profiles,names,"R6902637_097",regr,ht_features_reduced)
+
 def quality_index_figure(profiles,chosenprofiles,mlmodel,feature_function):
     ht_error = []
     crit_error = []
@@ -281,6 +292,7 @@ def quality_index_figure(profiles,chosenprofiles,mlmodel,feature_function):
     plt.title("")
     plt.savefig('qual_index.png')
     plt.close()
+
 quality_index_figure(profiles,chosenprofiles,regr,ht_features_reduced)
 error_dist_figure(profiles,chosenprofiles,regr,ht_features_reduced)
 
@@ -418,7 +430,7 @@ if False:
             #print(names[l],int(np.nanmean(np.sqrt(error.T[l]**2))),int(np.std(np.sqrt(error.T[l]**2))))
         plt.savefig("ht_error.png")
 
-with open('../MLDIdentifierTool/json_generator/profiles.json') as f:
+def sensitivity_figure(profiles,names):
     profiles = json.load(f)
     ht_error = []
     regr_error = []
@@ -458,6 +470,5 @@ with open('../MLDIdentifierTool/json_generator/profiles.json') as f:
     ax2.hist(regr_error,range=(0,50),bins=20,color="blue",label = "Random Forest Method",alpha=0.3)
     ax3.hist(thresh_error,range=(0,50),bins=20,color="green", label = "Density Threshold Method",alpha=0.3)
     ax.legend()
-    plt.savefig("sensitivity.png")
-    plt.close()
 
+sensitivity_figure(profiles,names)
